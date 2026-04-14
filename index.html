@@ -22,6 +22,7 @@
             padding: 20px;
             color: #776e65;
             overflow-x: hidden;
+            user-select: none;
         }
 
         .container {
@@ -170,7 +171,7 @@
             align-items: center;
             font-weight: bold;
             border-radius: 6px;
-            transition: top 0.15s ease-in-out, left 0.15s ease-in-out;
+            transition: top 0.12s ease-in-out, left 0.12s ease-in-out;
             z-index: 10;
         }
 
@@ -179,7 +180,7 @@
         }
 
         .tile.merged {
-            animation: tileMerge 0.2s ease-out;
+            animation: tileMerge 0.2ms ease-out;
             z-index: 20;
         }
 
@@ -199,7 +200,7 @@
                 transform: scale(1);
             }
             50% {
-                transform: scale(1.1);
+                transform: scale(1.15);
             }
             100% {
                 transform: scale(1);
@@ -268,6 +269,19 @@
             font-size: 18px;
             color: #776e65;
             margin-bottom: 30px;
+        }
+
+        .game-message-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-continue {
+            background-color: #f2b179;
+        }
+
+        .btn-continue:hover {
+            background-color: #f5c08a;
         }
 
         .instructions {
@@ -387,7 +401,9 @@
             <div class="game-message" id="game-message">
                 <div class="game-message-title" id="message-title">游戏结束</div>
                 <div class="game-message-subtitle" id="message-subtitle">最终得分: 0</div>
-                <button class="btn" id="retry-btn">再玩一次</button>
+                <div class="game-message-buttons" id="message-buttons">
+                    <button class="btn" id="retry-btn">再玩一次</button>
+                </div>
             </div>
         </div>
 
@@ -409,8 +425,10 @@
                 this.bestScore = 0;
                 this.gameState = 'playing';
                 this.hasWon = false;
+                this.continueAfterWin = false;
                 this.tileId = 0;
                 this.tiles = new Map();
+                this.isAnimating = false;
 
                 this.gridContainer = document.getElementById('grid-container');
                 this.scoreElement = document.getElementById('score');
@@ -419,6 +437,7 @@
                 this.gameMessageElement = document.getElementById('game-message');
                 this.messageTitleElement = document.getElementById('message-title');
                 this.messageSubtitleElement = document.getElementById('message-subtitle');
+                this.messageButtonsElement = document.getElementById('message-buttons');
 
                 this.cellSize = 0;
                 this.gapSize = 0;
@@ -451,6 +470,7 @@
                 this.score = 0;
                 this.gameState = 'playing';
                 this.hasWon = false;
+                this.continueAfterWin = false;
                 this.tiles.clear();
                 this.gridContainer.innerHTML = '';
                 this.updateScore(0);
@@ -539,90 +559,112 @@
             }
 
             move(direction) {
-                if (this.gameState === 'over') return false;
+                if (this.gameState === 'over' || this.isAnimating) return false;
 
+                const vector = this.getVector(direction);
+                if (!vector) return false;
+
+                let moved = false;
+                let scoreGained = 0;
+                const mergedTiles = new Set();
+                const tileMoves = [];
+                const tileMerges = [];
+
+                const traversals = this.buildTraversals(direction);
+
+                for (const r of traversals.r) {
+                    for (const c of traversals.c) {
+                        const value = this.grid[r][c];
+                        if (value === 0) continue;
+
+                        const tileId = this.findTileIdAt(r, c);
+                        if (tileId === null) continue;
+
+                        const { farthest, next } = this.findFarthestPosition(r, c, vector, mergedTiles);
+
+                        if (next && this.grid[next.r][next.c] === value && !mergedTiles.has(`${next.r},${next.c}`)) {
+                            const mergedValue = value * 2;
+                            this.grid[next.r][next.c] = mergedValue;
+                            this.grid[r][c] = 0;
+                            mergedTiles.add(`${next.r},${next.c}`);
+                            scoreGained += mergedValue;
+
+                            tileMoves.push({ tileId, fromRow: r, fromCol: c, toRow: next.r, toCol: next.c });
+                            tileMerges.push({ row: next.r, col: next.c, value: mergedValue, id: tileId });
+                            moved = true;
+
+                            if (mergedValue === 2048 && !this.hasWon) {
+                                this.hasWon = true;
+                            }
+                        } else if (farthest.r !== r || farthest.c !== c) {
+                            this.grid[farthest.r][farthest.c] = value;
+                            this.grid[r][c] = 0;
+
+                            tileMoves.push({ tileId, fromRow: r, fromCol: c, toRow: farthest.r, toCol: farthest.c });
+                            moved = true;
+                        }
+                    }
+                }
+
+                if (moved) {
+                    this.isAnimating = true;
+                    this.animateTiles(tileMoves, tileMerges, scoreGained);
+                    return true;
+                }
+
+                return false;
+            }
+
+            getVector(direction) {
                 const vectors = {
                     up: { r: -1, c: 0 },
                     down: { r: 1, c: 0 },
                     left: { r: 0, c: -1 },
                     right: { r: 0, c: 1 }
                 };
+                return vectors[direction];
+            }
 
-                const vector = vectors[direction];
-                if (!vector) return false;
+            buildTraversals(direction) {
+                const traversals = {
+                    r: [],
+                    c: []
+                };
 
-                let moved = false;
-                const mergedPositions = new Set();
-                const tileUpdates = [];
-
-                const traverseOrders = this.getTraverseOrders(direction);
-
-                for (const { r, c } of traverseOrders) {
-                    if (this.grid[r][c] === 0) continue;
-
-                    const tileId = this.findTileIdAt(r, c);
-                    if (tileId === null) continue;
-
-                    const tileData = this.tiles.get(tileId);
-                    let newR = r;
-                    let newC = c;
-                    let merged = false;
-
-                    while (true) {
-                        const nextR = newR + vector.r;
-                        const nextC = newC + vector.c;
-
-                        if (nextR < 0 || nextR >= this.gridSize || nextC < 0 || nextC >= this.gridSize) {
-                            break;
-                        }
-
-                        if (this.grid[nextR][nextC] === 0) {
-                            newR = nextR;
-                            newC = nextC;
-                        } else if (
-                            this.grid[nextR][nextC] === this.grid[r][c] &&
-                            !mergedPositions.has(`${nextR},${nextC}`)
-                        ) {
-                            newR = nextR;
-                            newC = nextC;
-                            merged = true;
-                            break;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    if (newR !== r || newC !== c) {
-                        moved = true;
-                        const oldValue = this.grid[r][c];
-                        const newValue = merged ? oldValue * 2 : oldValue;
-
-                        this.grid[r][c] = 0;
-                        this.grid[newR][newC] = newValue;
-
-                        tileUpdates.push({
-                            tileId,
-                            fromRow: r,
-                            fromCol: c,
-                            toRow: newR,
-                            toCol: newC,
-                            merged,
-                            oldValue,
-                            newValue
-                        });
-
-                        if (merged) {
-                            mergedPositions.add(`${newR},${newC}`);
-                        }
-                    }
+                for (let i = 0; i < this.gridSize; i++) {
+                    traversals.r.push(i);
+                    traversals.c.push(i);
                 }
 
-                if (moved) {
-                    this.processTileUpdates(tileUpdates);
-                    return true;
+                if (direction === 'down') {
+                    traversals.r.reverse();
+                } else if (direction === 'right') {
+                    traversals.c.reverse();
                 }
 
-                return false;
+                return traversals;
+            }
+
+            findFarthestPosition(row, col, vector, mergedTiles) {
+                let previous;
+                let r = row;
+                let c = col;
+
+                do {
+                    previous = { r, c };
+                    r += vector.r;
+                    c += vector.c;
+                } while (this.withinBounds(r, c) && this.grid[r][c] === 0);
+
+                const next = this.withinBounds(r, c) && !mergedTiles.has(`${r},${c}`)
+                    ? { r, c }
+                    : null;
+
+                return { farthest: previous, next };
+            }
+
+            withinBounds(r, c) {
+                return r >= 0 && r < this.gridSize && c >= 0 && c < this.gridSize;
             }
 
             findTileIdAt(row, col) {
@@ -634,80 +676,55 @@
                 return null;
             }
 
-            getTraverseOrders(direction) {
-                const orders = [];
-                for (let r = 0; r < this.gridSize; r++) {
-                    for (let c = 0; c < this.gridSize; c++) {
-                        orders.push({ r, c });
+            animateTiles(tileMoves, tileMerges, scoreGained) {
+                for (const move of tileMoves) {
+                    const tileData = this.tiles.get(move.tileId);
+                    if (tileData) {
+                        this.setTilePosition(tileData.element, move.toRow, move.toCol);
+                        tileData.row = move.toRow;
+                        tileData.col = move.toCol;
                     }
-                }
-
-                if (direction === 'down') {
-                    orders.reverse();
-                } else if (direction === 'right') {
-                    for (let i = 0; i < orders.length; i++) {
-                        const r = Math.floor(i / this.gridSize);
-                        const c = this.gridSize - 1 - (i % this.gridSize);
-                        orders[i] = { r, c };
-                    }
-                } else if (direction === 'left') {
-                    for (let i = 0; i < orders.length; i++) {
-                        const r = Math.floor(i / this.gridSize);
-                        const c = i % this.gridSize;
-                        orders[i] = { r, c };
-                    }
-                }
-
-                return orders;
-            }
-
-            processTileUpdates(updates) {
-                const tilesToRemove = [];
-
-                for (const update of updates) {
-                    const tileData = this.tiles.get(update.tileId);
-                    if (!tileData) continue;
-
-                    if (update.merged) {
-                        tilesToRemove.push(update.tileId);
-                        const mergedTileId = ++this.tileId;
-                        const mergedTile = this.createTileElement(update.toRow, update.toCol, update.newValue, false);
-                        mergedTile.classList.add('merged');
-                        mergedTile.dataset.id = mergedTileId;
-                        this.tiles.set(mergedTileId, {
-                            element: mergedTile,
-                            row: update.toRow,
-                            col: update.toCol,
-                            value: update.newValue
-                        });
-                        this.updateScore(update.newValue);
-
-                        if (update.newValue === 2048 && !this.hasWon) {
-                            this.hasWon = true;
-                            setTimeout(() => this.showWinMessage(), 300);
-                        }
-                    } else {
-                        this.setTilePosition(tileData.element, update.toRow, update.toCol);
-                        tileData.row = update.toRow;
-                        tileData.col = update.toCol;
-                    }
-                }
-
-                for (const id of tilesToRemove) {
-                    const tileData = this.tiles.get(id);
-                    if (tileData && tileData.element.parentNode) {
-                        tileData.element.parentNode.removeChild(tileData.element);
-                    }
-                    this.tiles.delete(id);
                 }
 
                 setTimeout(() => {
-                    this.addRandomTile();
-                    if (this.checkGameOver()) {
-                        this.gameState = 'over';
-                        setTimeout(() => this.showGameOverMessage(), 300);
+                    for (const merge of tileMerges) {
+                        const tileId = this.findTileIdAt(merge.row, merge.col);
+                        if (tileId !== null) {
+                            const tileData = this.tiles.get(tileId);
+                            if (tileData && tileData.element.parentNode) {
+                                tileData.element.parentNode.removeChild(tileData.element);
+                            }
+                            this.tiles.delete(tileId);
+                        }
+
+                        const newTile = this.createTileElement(merge.row, merge.col, merge.value, false);
+                        newTile.classList.add('merged');
+                        const newId = ++this.tileId;
+                        newTile.dataset.id = newId;
+                        this.tiles.set(newId, {
+                            element: newTile,
+                            row: merge.row,
+                            col: merge.col,
+                            value: merge.value
+                        });
                     }
-                }, 150);
+
+                    this.updateScore(scoreGained);
+
+                    setTimeout(() => {
+                        this.addRandomTile();
+
+                        if (this.hasWon && !this.continueAfterWin && this.gameState !== 'over') {
+                            this.gameState = 'won';
+                            this.showWinMessage();
+                        } else if (this.checkGameOver()) {
+                            this.gameState = 'over';
+                            this.showGameOverMessage();
+                        }
+
+                        this.isAnimating = false;
+                    }, 50);
+                }, 120);
             }
 
             checkGameOver() {
@@ -730,15 +747,30 @@
 
             showWinMessage() {
                 this.messageTitleElement.textContent = '你赢了！';
-                this.messageSubtitleElement.textContent = '太棒了！继续挑战更高的分数？';
+                this.messageSubtitleElement.textContent = `太棒了！最终得分: ${this.score}`;
+                this.messageButtonsElement.innerHTML = `
+                    <button class="btn btn-continue" id="continue-btn">继续游戏</button>
+                    <button class="btn" id="retry-btn">重新开始</button>
+                `;
                 this.gameMessageElement.classList.add('active', 'win');
+
+                document.getElementById('continue-btn').addEventListener('click', () => {
+                    this.continueAfterWin = true;
+                    this.hideMessage();
+                });
+                document.getElementById('retry-btn').addEventListener('click', () => this.init());
             }
 
             showGameOverMessage() {
                 this.messageTitleElement.textContent = '游戏结束';
                 this.messageSubtitleElement.textContent = `最终得分: ${this.score}`;
+                this.messageButtonsElement.innerHTML = `
+                    <button class="btn" id="retry-btn">再玩一次</button>
+                `;
                 this.gameMessageElement.classList.add('active');
                 this.gameMessageElement.classList.remove('win');
+
+                document.getElementById('retry-btn').addEventListener('click', () => this.init());
             }
 
             hideMessage() {
@@ -749,12 +781,9 @@
                 document.addEventListener('keydown', (e) => this.handleKeyDown(e));
 
                 document.getElementById('new-game-btn').addEventListener('click', () => this.init());
-                document.getElementById('retry-btn').addEventListener('click', () => this.init());
 
                 let touchStartX = 0;
                 let touchStartY = 0;
-                let touchEndX = 0;
-                let touchEndY = 0;
 
                 const gameContainer = document.getElementById('game-container');
 
@@ -769,8 +798,8 @@
                 }, { passive: false });
 
                 gameContainer.addEventListener('touchend', (e) => {
-                    touchEndX = e.changedTouches[0].clientX;
-                    touchEndY = e.changedTouches[0].clientY;
+                    const touchEndX = e.changedTouches[0].clientX;
+                    const touchEndY = e.changedTouches[0].clientY;
                     this.handleSwipe(touchStartX, touchStartY, touchEndX, touchEndY);
                 });
 
