@@ -426,7 +426,7 @@
                 this.gameState = 'playing';
                 this.hasWon = false;
                 this.continueAfterWin = false;
-                this.tileId = 0;
+                this.tileSeq = 0;
                 this.tiles = new Map();
                 this.isAnimating = false;
 
@@ -472,6 +472,7 @@
                 this.hasWon = false;
                 this.continueAfterWin = false;
                 this.tiles.clear();
+                this.tileSeq = 0;
                 this.gridContainer.innerHTML = '';
                 this.updateScore(0);
                 this.hideMessage();
@@ -488,67 +489,84 @@
                         }
                     }
                 }
-
                 if (emptyCells.length === 0) return null;
 
                 const { r, c } = emptyCells[Math.floor(Math.random() * emptyCells.length)];
                 const value = Math.random() < 0.9 ? 2 : 4;
                 this.grid[r][c] = value;
-
-                const tile = this.createTileElement(r, c, value, true);
-                return tile;
+                return this.createTile(r, c, value, true);
             }
 
-            createTileElement(row, col, value, isNew = false) {
+            nextId() {
+                return String(++this.tileSeq);
+            }
+
+            createTile(row, col, value, isNew) {
+                const id = this.nextId();
                 const tile = document.createElement('div');
                 const tileClass = value <= 2048 ? `tile-${value}` : 'tile-super';
                 tile.className = `tile ${tileClass}${isNew ? ' new' : ''}`;
                 tile.textContent = value;
+                tile.dataset.tileId = id;
 
-                this.setTilePosition(tile, row, col);
-                this.updateTileFontSize(tile, value);
+                this.positionTile(tile, row, col);
+                this.sizeTileFont(tile, value);
 
-                tile.dataset.id = ++this.tileId;
-                this.tiles.set(tile.dataset.id, { element: tile, row, col, value });
-
+                const record = { element: tile, row, col, value };
+                this.tiles.set(id, record);
                 this.gridContainer.appendChild(tile);
-                return tile;
+                return { id, record };
             }
 
-            setTilePosition(tile, row, col) {
+            positionTile(tile, row, col) {
                 tile.style.width = `${this.cellSize}px`;
                 tile.style.height = `${this.cellSize}px`;
                 tile.style.top = `${row * (this.cellSize + this.gapSize)}px`;
                 tile.style.left = `${col * (this.cellSize + this.gapSize)}px`;
             }
 
-            updateTileFontSize(tile, value) {
+            sizeTileFont(tile, value) {
                 let fontSize;
-                if (value < 100) {
-                    fontSize = this.cellSize * 0.5;
-                } else if (value < 1000) {
-                    fontSize = this.cellSize * 0.4;
-                } else if (value < 10000) {
-                    fontSize = this.cellSize * 0.3;
-                } else {
-                    fontSize = this.cellSize * 0.25;
-                }
+                if (value < 100) fontSize = this.cellSize * 0.5;
+                else if (value < 1000) fontSize = this.cellSize * 0.4;
+                else if (value < 10000) fontSize = this.cellSize * 0.3;
+                else fontSize = this.cellSize * 0.25;
                 tile.style.fontSize = `${fontSize}px`;
+            }
+
+            updateRecordPosition(id, row, col) {
+                const rec = this.tiles.get(id);
+                if (!rec) return;
+                rec.row = row;
+                rec.col = col;
+                this.positionTile(rec.element, row, col);
+            }
+
+            removeTileById(id) {
+                const rec = this.tiles.get(id);
+                if (!rec) return;
+                if (rec.element.parentNode) {
+                    rec.element.parentNode.removeChild(rec.element);
+                }
+                this.tiles.delete(id);
+            }
+
+            findIdAt(row, col) {
+                for (const [id, rec] of this.tiles) {
+                    if (rec.row === row && rec.col === col) return id;
+                }
+                return null;
             }
 
             updateScore(addedScore) {
                 this.score += addedScore;
                 this.scoreElement.textContent = this.score;
-
                 if (this.score > this.bestScore) {
                     this.bestScore = this.score;
                     this.bestScoreElement.textContent = this.bestScore;
                     this.saveBestScore();
                 }
-
-                if (addedScore > 0) {
-                    this.showScoreAddition(addedScore);
-                }
+                if (addedScore > 0) this.showScoreAddition(addedScore);
             }
 
             showScoreAddition(score) {
@@ -566,41 +584,47 @@
 
                 let moved = false;
                 let scoreGained = 0;
-                const mergedTiles = new Set();
-                const tileMoves = [];
-                const tileMerges = [];
+                const mergedPositions = new Set();
+                const moves = [];
+                const merges = [];
 
-                const traversals = this.buildTraversals(direction);
+                const trav = this.buildTraversals(direction);
 
-                for (const r of traversals.r) {
-                    for (const c of traversals.c) {
-                        const value = this.grid[r][c];
-                        if (value === 0) continue;
+                for (const r of trav.r) {
+                    for (const c of trav.c) {
+                        const val = this.grid[r][c];
+                        if (val === 0) continue;
 
-                        const tileId = this.findTileIdAt(r, c);
-                        if (tileId === null) continue;
+                        const srcId = this.findIdAt(r, c);
+                        if (srcId === null) continue;
 
-                        const { farthest, next } = this.findFarthestPosition(r, c, vector, mergedTiles);
+                        const { farthest, next } = this.findFarthest(r, c, vector, mergedPositions);
 
-                        if (next && this.grid[next.r][next.c] === value && !mergedTiles.has(`${next.r},${next.c}`)) {
-                            const mergedValue = value * 2;
-                            this.grid[next.r][next.c] = mergedValue;
+                        if (next && this.grid[next.r][next.c] === val && !mergedPositions.has(`${next.r},${next.c}`)) {
+                            const mergedVal = val * 2;
+                            this.grid[next.r][next.c] = mergedVal;
                             this.grid[r][c] = 0;
-                            mergedTiles.add(`${next.r},${next.c}`);
-                            scoreGained += mergedValue;
+                            mergedPositions.add(`${next.r},${next.c}`);
+                            scoreGained += mergedVal;
 
-                            tileMoves.push({ tileId, fromRow: r, fromCol: c, toRow: next.r, toCol: next.c });
-                            tileMerges.push({ row: next.r, col: next.c, value: mergedValue, id: tileId });
+                            const targetId = this.findIdAt(next.r, next.c);
+                            moves.push({ id: srcId, fromR: r, fromC: c, toR: next.r, toC: next.c });
+                            merges.push({
+                                posR: next.r,
+                                posC: next.c,
+                                value: mergedVal,
+                                activeId: srcId,
+                                targetId: targetId,
+                                idsToRemove: [srcId]
+                            });
+                            if (targetId !== null) merges[merges.length - 1].idsToRemove.push(targetId);
                             moved = true;
 
-                            if (mergedValue === 2048 && !this.hasWon) {
-                                this.hasWon = true;
-                            }
+                            if (mergedVal === 2048 && !this.hasWon) this.hasWon = true;
                         } else if (farthest.r !== r || farthest.c !== c) {
-                            this.grid[farthest.r][farthest.c] = value;
+                            this.grid[farthest.r][farthest.c] = val;
                             this.grid[r][c] = 0;
-
-                            tileMoves.push({ tileId, fromRow: r, fromCol: c, toRow: farthest.r, toCol: farthest.c });
+                            moves.push({ id: srcId, fromR: r, fromC: c, toR: farthest.r, toC: farthest.c });
                             moved = true;
                         }
                     }
@@ -608,110 +632,58 @@
 
                 if (moved) {
                     this.isAnimating = true;
-                    this.animateTiles(tileMoves, tileMerges, scoreGained);
+                    this.runAnimation(moves, merges, scoreGained);
                     return true;
                 }
-
                 return false;
             }
 
             getVector(direction) {
-                const vectors = {
-                    up: { r: -1, c: 0 },
-                    down: { r: 1, c: 0 },
-                    left: { r: 0, c: -1 },
-                    right: { r: 0, c: 1 }
-                };
-                return vectors[direction];
+                const map = { up:{r:-1,c:0}, down:{r:1,c:0}, left:{r:0,c:-1}, right:{r:0,c:1} };
+                return map[direction];
             }
 
             buildTraversals(direction) {
-                const traversals = {
-                    r: [],
-                    c: []
-                };
-
-                for (let i = 0; i < this.gridSize; i++) {
-                    traversals.r.push(i);
-                    traversals.c.push(i);
-                }
-
-                if (direction === 'down') {
-                    traversals.r.reverse();
-                } else if (direction === 'right') {
-                    traversals.c.reverse();
-                }
-
-                return traversals;
+                const t = { r:[], c:[] };
+                for (let i = 0; i < this.gridSize; i++) { t.r.push(i); t.c.push(i); }
+                if (direction === 'down') t.r.reverse();
+                else if (direction === 'right') t.c.reverse();
+                return t;
             }
 
-            findFarthestPosition(row, col, vector, mergedTiles) {
-                let previous;
-                let r = row;
-                let c = col;
-
+            findFarthest(row, col, vec, mergedPos) {
+                let prev, r = row, c = col;
                 do {
-                    previous = { r, c };
-                    r += vector.r;
-                    c += vector.c;
-                } while (this.withinBounds(r, c) && this.grid[r][c] === 0);
+                    prev = { r, c };
+                    r += vec.r;
+                    c += vec.c;
+                } while (this.inBounds(r, c) && this.grid[r][c] === 0);
 
-                const next = this.withinBounds(r, c) && !mergedTiles.has(`${r},${c}`)
-                    ? { r, c }
-                    : null;
-
-                return { farthest: previous, next };
+                const next = this.inBounds(r, c) && !mergedPos.has(`${r},${c}`) ? { r, c } : null;
+                return { farthest: prev, next };
             }
 
-            withinBounds(r, c) {
+            inBounds(r, c) {
                 return r >= 0 && r < this.gridSize && c >= 0 && c < this.gridSize;
             }
 
-            findTileIdAt(row, col) {
-                for (const [id, data] of this.tiles) {
-                    if (data.row === row && data.col === col) {
-                        return id;
-                    }
-                }
-                return null;
-            }
-
-            animateTiles(tileMoves, tileMerges, scoreGained) {
-                for (const move of tileMoves) {
-                    const tileData = this.tiles.get(move.tileId);
-                    if (tileData) {
-                        this.setTilePosition(tileData.element, move.toRow, move.toCol);
-                        tileData.row = move.toRow;
-                        tileData.col = move.toCol;
-                    }
+            runAnimation(moves, merges, scoreGained) {
+                for (const m of moves) {
+                    this.updateRecordPosition(m.id, m.toR, m.toC);
                 }
 
                 setTimeout(() => {
-                    for (const merge of tileMerges) {
-                        const tilesAtPosition = [];
-                        for (const [id, data] of this.tiles) {
-                            if (data.row === merge.row && data.col === merge.col) {
-                                tilesAtPosition.push(id);
-                            }
-                        }
-                        for (const id of tilesAtPosition) {
-                            const tileData = this.tiles.get(id);
-                            if (tileData && tileData.element.parentNode) {
-                                tileData.element.parentNode.removeChild(tileData.element);
-                            }
-                            this.tiles.delete(id);
-                        }
+                    const idsToRemoveSet = new Set();
+                    for (const mg of merges) {
+                        for (const id of mg.idsToRemove) idsToRemoveSet.add(id);
+                    }
+                    for (const id of idsToRemoveSet) {
+                        this.removeTileById(id);
+                    }
 
-                        const newTile = this.createTileElement(merge.row, merge.col, merge.value, false);
-                        newTile.classList.add('merged');
-                        const newId = ++this.tileId;
-                        newTile.dataset.id = newId;
-                        this.tiles.set(newId, {
-                            element: newTile,
-                            row: merge.row,
-                            col: merge.col,
-                            value: merge.value
-                        });
+                    for (const mg of merges) {
+                        const created = this.createTile(mg.posR, mg.posC, mg.value, false);
+                        created.record.element.classList.add('merged');
                     }
 
                     this.updateScore(scoreGained);
@@ -726,27 +698,22 @@
                             this.gameState = 'over';
                             this.showGameOverMessage();
                         }
-
                         this.isAnimating = false;
                     }, 50);
                 }, 120);
             }
 
             checkGameOver() {
-                for (let r = 0; r < this.gridSize; r++) {
-                    for (let c = 0; c < this.gridSize; c++) {
+                for (let r = 0; r < this.gridSize; r++)
+                    for (let c = 0; c < this.gridSize; c++)
                         if (this.grid[r][c] === 0) return false;
-                    }
-                }
 
-                for (let r = 0; r < this.gridSize; r++) {
+                for (let r = 0; r < this.gridSize; r++)
                     for (let c = 0; c < this.gridSize; c++) {
-                        const value = this.grid[r][c];
-                        if (r < this.gridSize - 1 && this.grid[r + 1][c] === value) return false;
-                        if (c < this.gridSize - 1 && this.grid[r][c + 1] === value) return false;
+                        const v = this.grid[r][c];
+                        if (r < this.gridSize - 1 && this.grid[r + 1][c] === v) return false;
+                        if (c < this.gridSize - 1 && this.grid[r][c + 1] === v) return false;
                     }
-                }
-
                 return true;
             }
 
@@ -758,7 +725,6 @@
                     <button class="btn" id="retry-btn">重新开始</button>
                 `;
                 this.gameMessageElement.classList.add('active', 'win');
-
                 document.getElementById('continue-btn').addEventListener('click', () => {
                     this.continueAfterWin = true;
                     this.gameState = 'playing';
@@ -770,12 +736,9 @@
             showGameOverMessage() {
                 this.messageTitleElement.textContent = '游戏结束';
                 this.messageSubtitleElement.textContent = `最终得分: ${this.score}`;
-                this.messageButtonsElement.innerHTML = `
-                    <button class="btn" id="retry-btn">再玩一次</button>
-                `;
+                this.messageButtonsElement.innerHTML = `<button class="btn" id="retry-btn">再玩一次</button>`;
                 this.gameMessageElement.classList.add('active');
                 this.gameMessageElement.classList.remove('win');
-
                 document.getElementById('retry-btn').addEventListener('click', () => this.init());
             }
 
@@ -785,80 +748,44 @@
 
             setupEventListeners() {
                 document.addEventListener('keydown', (e) => this.handleKeyDown(e));
-
                 document.getElementById('new-game-btn').addEventListener('click', () => this.init());
 
-                let touchStartX = 0;
-                let touchStartY = 0;
+                let touchStartX = 0, touchStartY = 0;
+                const gc = document.getElementById('game-container');
 
-                const gameContainer = document.getElementById('game-container');
-
-                gameContainer.addEventListener('touchstart', (e) => {
-                    touchStartX = e.touches[0].clientX;
-                    touchStartY = e.touches[0].clientY;
-                    e.preventDefault();
-                }, { passive: false });
-
-                gameContainer.addEventListener('touchmove', (e) => {
-                    e.preventDefault();
-                }, { passive: false });
-
-                gameContainer.addEventListener('touchend', (e) => {
-                    const touchEndX = e.changedTouches[0].clientX;
-                    const touchEndY = e.changedTouches[0].clientY;
-                    this.handleSwipe(touchStartX, touchStartY, touchEndX, touchEndY);
+                gc.addEventListener('touchstart', (e) => { touchStartX = e.touches[0].clientX; touchStartY = e.touches[0].clientY; e.preventDefault(); }, { passive: false });
+                gc.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+                gc.addEventListener('touchend', (e) => {
+                    this.handleSwipe(touchStartX, touchStartY, e.changedTouches[0].clientX, e.changedTouches[0].clientY);
                 });
 
-                window.addEventListener('resize', () => {
-                    this.calculateCellSize();
-                    this.repositionTiles();
-                });
+                window.addEventListener('resize', () => { this.calculateCellSize(); this.repositionAllTiles(); });
             }
 
             handleKeyDown(e) {
-                const keyMap = {
-                    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
-                    w: 'up', W: 'up', s: 'down', S: 'down',
-                    a: 'left', A: 'left', d: 'right', D: 'right'
-                };
-
-                const direction = keyMap[e.key];
-                if (direction) {
-                    e.preventDefault();
-                    this.move(direction);
-                }
+                const map = { ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right', w:'up',W:'up', s:'down',S:'down', a:'left',A:'left', d:'right',D:'right' };
+                const dir = map[e.key];
+                if (dir) { e.preventDefault(); this.move(dir); }
             }
 
-            handleSwipe(startX, startY, endX, endY) {
-                const dx = endX - startX;
-                const dy = endY - startY;
-                const minSwipeDistance = 50;
-
-                if (Math.abs(dx) < minSwipeDistance && Math.abs(dy) < minSwipeDistance) {
-                    return;
-                }
-
-                let direction;
-                if (Math.abs(dx) > Math.abs(dy)) {
-                    direction = dx > 0 ? 'right' : 'left';
-                } else {
-                    direction = dy > 0 ? 'down' : 'up';
-                }
-
-                this.move(direction);
+            handleSwipe(sx, sy, ex, ey) {
+                const dx = ex - sx, dy = ey - sy;
+                if (Math.abs(dx) < 50 && Math.abs(dy) < 50) return;
+                let dir;
+                if (Math.abs(dx) > Math.abs(dy)) dir = dx > 0 ? 'right' : 'left';
+                else dir = dy > 0 ? 'down' : 'up';
+                this.move(dir);
             }
 
-            repositionTiles() {
-                for (const [id, data] of this.tiles) {
-                    this.setTilePosition(data.element, data.row, data.col);
-                    this.updateTileFontSize(data.element, data.value);
+            repositionAllTiles() {
+                for (const [, rec] of this.tiles) {
+                    this.positionTile(rec.element, rec.row, rec.col);
+                    this.sizeTileFont(rec.element, rec.value);
                 }
             }
         }
 
-        window.addEventListener('DOMContentLoaded', () => {
-            new Game2048();
-        });
+        window.addEventListener('DOMContentLoaded', () => { new Game2048(); });
     </script>
 </body>
 </html>
