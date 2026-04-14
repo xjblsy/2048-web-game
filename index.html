@@ -180,7 +180,7 @@
         }
 
         .tile.merged {
-            animation: tileMerge 0.2ms ease-out;
+            animation: tileMerge 0.2s ease-out;
             z-index: 20;
         }
 
@@ -559,7 +559,7 @@
             }
 
             move(direction) {
-                if (this.gameState === 'over' || this.isAnimating) return false;
+                if (this.gameState === 'over' || this.gameState === 'won' || this.isAnimating) return false;
 
                 const vector = this.getVector(direction);
                 if (!vector) return false;
@@ -688,13 +688,18 @@
 
                 setTimeout(() => {
                     for (const merge of tileMerges) {
-                        const tileId = this.findTileIdAt(merge.row, merge.col);
-                        if (tileId !== null) {
-                            const tileData = this.tiles.get(tileId);
+                        const tilesAtPosition = [];
+                        for (const [id, data] of this.tiles) {
+                            if (data.row === merge.row && data.col === merge.col) {
+                                tilesAtPosition.push(id);
+                            }
+                        }
+                        for (const id of tilesAtPosition) {
+                            const tileData = this.tiles.get(id);
                             if (tileData && tileData.element.parentNode) {
                                 tileData.element.parentNode.removeChild(tileData.element);
                             }
-                            this.tiles.delete(tileId);
+                            this.tiles.delete(id);
                         }
 
                         const newTile = this.createTileElement(merge.row, merge.col, merge.value, false);
@@ -756,6 +761,7 @@
 
                 document.getElementById('continue-btn').addEventListener('click', () => {
                     this.continueAfterWin = true;
+                    this.gameState = 'playing';
                     this.hideMessage();
                 });
                 document.getElementById('retry-btn').addEventListener('click', () => this.init());
