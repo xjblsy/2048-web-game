@@ -582,60 +582,116 @@
                 const vector = this.getVector(direction);
                 if (!vector) return false;
 
-                let moved = false;
+                const plan = this.buildMovePlan(direction, vector);
+                if (!plan.moved) return false;
+
+                this.isAnimating = true;
+                this.executeMovePlan(plan);
+                return true;
+            }
+
+            buildMovePlan(direction, vector) {
                 let scoreGained = 0;
                 const mergedPositions = new Set();
                 const moves = [];
                 const merges = [];
+                let moved = false;
 
+                const simGrid = this.grid.map(row => [...row]);
                 const trav = this.buildTraversals(direction);
+                const posToId = new Map();
+                for (const [id, rec] of this.tiles) posToId.set(`${rec.row},${rec.col}`, id);
 
                 for (const r of trav.r) {
                     for (const c of trav.c) {
-                        const val = this.grid[r][c];
+                        const val = simGrid[r][c];
                         if (val === 0) continue;
 
-                        const srcId = this.findIdAt(r, c);
-                        if (srcId === null) continue;
+                        const srcId = posToId.get(`${r},${c}`);
+                        if (srcId === undefined) continue;
 
-                        const { farthest, next } = this.findFarthest(r, c, vector, mergedPositions);
+                        const { farthest, next } = this.findFarthestOnSim(simGrid, r, c, vector, mergedPositions);
 
-                        if (next && this.grid[next.r][next.c] === val && !mergedPositions.has(`${next.r},${next.c}`)) {
+                        if (next && simGrid[next.r][next.c] === val && !mergedPositions.has(`${next.r},${next.c}`)) {
                             const mergedVal = val * 2;
-                            this.grid[next.r][next.c] = mergedVal;
-                            this.grid[r][c] = 0;
+                            simGrid[next.r][next.c] = mergedVal;
+                            simGrid[r][c] = 0;
                             mergedPositions.add(`${next.r},${next.c}`);
                             scoreGained += mergedVal;
 
-                            const targetId = this.findIdAt(next.r, next.c);
+                            const targetId = posToId.get(`${next.r},${next.c}`);
                             moves.push({ id: srcId, fromR: r, fromC: c, toR: next.r, toC: next.c });
                             merges.push({
                                 posR: next.r,
                                 posC: next.c,
                                 value: mergedVal,
                                 activeId: srcId,
-                                targetId: targetId,
+                                targetId: targetId || null,
                                 idsToRemove: [srcId]
                             });
-                            if (targetId !== null) merges[merges.length - 1].idsToRemove.push(targetId);
+                            if (targetId !== undefined) merges[merges.length - 1].idsToRemove.push(targetId);
                             moved = true;
 
                             if (mergedVal === 2048 && !this.hasWon) this.hasWon = true;
                         } else if (farthest.r !== r || farthest.c !== c) {
-                            this.grid[farthest.r][farthest.c] = val;
-                            this.grid[r][c] = 0;
+                            simGrid[farthest.r][farthest.c] = val;
+                            simGrid[r][c] = 0;
                             moves.push({ id: srcId, fromR: r, fromC: c, toR: farthest.r, toC: farthest.c });
                             moved = true;
                         }
                     }
                 }
 
-                if (moved) {
-                    this.isAnimating = true;
-                    this.runAnimation(moves, merges, scoreGained);
-                    return true;
+                return { moved, scoreGained, moves, merges };
+            }
+
+            executeMovePlan(plan) {
+                const { scoreGained, moves, merges } = plan;
+
+                const idsToRemoveSet = new Set();
+                for (const mg of merges) {
+                    for (const id of mg.idsToRemove) idsToRemoveSet.add(id);
                 }
-                return false;
+
+                for (const m of moves) this.grid[m.fromR][m.fromC] = 0;
+
+                const pureMoves = moves.filter(m => !idsToRemoveSet.has(m.id));
+
+                for (const m of pureMoves) {
+                    this.updateRecordPosition(m.id, m.toR, m.toC);
+                }
+                for (const m of pureMoves) {
+                    this.grid[m.toR][m.toC] = this.tiles.get(m.id).value;
+                }
+
+                setTimeout(() => {
+                    for (const id of idsToRemoveSet) {
+                        this.removeTileById(id);
+                    }
+
+                    for (const mg of merges) {
+                        this.grid[mg.posR][mg.posC] = mg.value;
+                        const created = this.createTile(mg.posR, mg.posC, mg.value, false);
+                        created.record.element.classList.add('merged');
+                    }
+
+                    this.syncTilesWithGrid();
+
+                    this.updateScore(scoreGained);
+
+                    setTimeout(() => {
+                        this.addRandomTile();
+
+                        if (this.hasWon && !this.continueAfterWin && this.gameState !== 'over') {
+                            this.gameState = 'won';
+                            this.showWinMessage();
+                        } else if (this.checkGameOver()) {
+                            this.gameState = 'over';
+                            this.showGameOverMessage();
+                        }
+                        this.isAnimating = false;
+                    }, 50);
+                }, 120);
             }
 
             getVector(direction) {
@@ -663,44 +719,20 @@
                 return { farthest: prev, next };
             }
 
-            inBounds(r, c) {
-                return r >= 0 && r < this.gridSize && c >= 0 && c < this.gridSize;
+            findFarthestOnSim(simGrid, row, col, vec, mergedPos) {
+                let prev, r = row, c = col;
+                do {
+                    prev = { r, c };
+                    r += vec.r;
+                    c += vec.c;
+                } while (this.inBounds(r, c) && simGrid[r][c] === 0);
+
+                const next = this.inBounds(r, c) && !mergedPos.has(`${r},${c}`) ? { r, c } : null;
+                return { farthest: prev, next };
             }
 
-            runAnimation(moves, merges, scoreGained) {
-                for (const m of moves) {
-                    this.updateRecordPosition(m.id, m.toR, m.toC);
-                }
-
-                setTimeout(() => {
-                    const idsToRemoveSet = new Set();
-                    for (const mg of merges) {
-                        for (const id of mg.idsToRemove) idsToRemoveSet.add(id);
-                    }
-                    for (const id of idsToRemoveSet) {
-                        this.removeTileById(id);
-                    }
-
-                    for (const mg of merges) {
-                        const created = this.createTile(mg.posR, mg.posC, mg.value, false);
-                        created.record.element.classList.add('merged');
-                    }
-
-                    this.updateScore(scoreGained);
-
-                    setTimeout(() => {
-                        this.addRandomTile();
-
-                        if (this.hasWon && !this.continueAfterWin && this.gameState !== 'over') {
-                            this.gameState = 'won';
-                            this.showWinMessage();
-                        } else if (this.checkGameOver()) {
-                            this.gameState = 'over';
-                            this.showGameOverMessage();
-                        }
-                        this.isAnimating = false;
-                    }, 50);
-                }, 120);
+            inBounds(r, c) {
+                return r >= 0 && r < this.gridSize && c >= 0 && c < this.gridSize;
             }
 
             checkGameOver() {
@@ -781,6 +813,19 @@
                 for (const [, rec] of this.tiles) {
                     this.positionTile(rec.element, rec.row, rec.col);
                     this.sizeTileFont(rec.element, rec.value);
+                }
+            }
+
+            syncTilesWithGrid() {
+                const toRemove = [];
+                for (const [id, rec] of this.tiles) {
+                    const gridVal = this.grid[rec.row][rec.col];
+                    if (rec.value !== gridVal || gridVal === 0) {
+                        toRemove.push(id);
+                    }
+                }
+                for (const id of toRemove) {
+                    this.removeTileById(id);
                 }
             }
         }
